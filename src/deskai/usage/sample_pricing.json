@@ -1,0 +1,31 @@
+[
+  {
+    "_comment": "Illustrative starting points only — verify against the provider's current pricing page before relying on these for real cost estimates.",
+    "provider": "bedrock",
+    "model_id": "anthropic.claude-3-5-sonnet-20241022-v2:0",
+    "input_per_mtok": 3.0,
+    "output_per_mtok": 15.0,
+    "unit": "USD"
+  },
+  {
+    "provider": "bedrock",
+    "model_id": "anthropic.claude-3-5-haiku-20241022-v1:0",
+    "input_per_mtok": 0.8,
+    "output_per_mtok": 4.0,
+    "unit": "USD"
+  },
+  {
+    "provider": "cloudflare",
+    "model_id": "@cf/meta/llama-3.1-8b-instruct",
+    "input_per_mtok": 0.0,
+    "output_per_mtok": 0.0,
+    "unit": "Neurons"
+  },
+  {
+    "provider": "openai_compat",
+    "model_id": "*",
+    "input_per_mtok": 0.0,
+    "output_per_mtok": 0.0,
+    "unit": "USD"
+  }
+]

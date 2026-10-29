@@ -1,0 +1,90 @@
+[project]
+name = "deskai"
+version = "0.1.0"
+description = "Desktop AI assistant: tray app with chat, settings and usage, multiple model providers, and sandboxed local file tools."
+requires-python = ">=3.12"
+dependencies = [
+    "pyside6>=6.7",
+    "qasync>=0.27",
+    "platformdirs>=4.2",
+    "keyring>=25.2",
+    "boto3>=1.43.118",
+    "jsonschema>=4.26.0",
+    "python-docx>=1.2.0",
+    "openpyxl>=3.1.5",
+    "python-pptx>=1.0.2",
+    "pymupdf<2.0",
+    # onnxruntime dropped macOS x86_64 (Intel) wheels after 1.23.x; pin below
+    # that so this installs on both Intel and Apple Silicon Macs.
+    "onnxruntime<1.24",
+    "rapidocr-onnxruntime>=1.4.4",
+    "httpx>=0.28.1",
+    "pyqtgraph>=0.14.0",
+    "pyyaml>=6.0.3",
+    "pynput>=1.8.2",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/deskai"]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.6",
+    "mypy>=1.11",
+    "pytest>=8.3",
+    "types-jsonschema>=4.26.0.20261006",
+    "types-pyyaml>=6.0.12.20260906",
+    "pyinstaller>=6.22.3",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unused_ignores = true
+
+[[tool.mypy.overrides]]
+module = [
+    "qasync",
+    "boto3",
+    "boto3.*",
+    "botocore.*",
+    "docx",
+    "docx.*",
+    "openpyxl",
+    "openpyxl.*",
+    "pptx",
+    "pptx.*",
+    "pymupdf",
+    "rapidocr_onnxruntime",
+    "pyqtgraph",
+    "pynput",
+    "pynput.*",
+]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# docx/openpyxl/pptx/pymupdf/cv2/rapidocr ship partial or no type info; these
+# modules are exactly the boundary code that calls into them.
+module = ["deskai.tools.*", "deskai.ocr.*"]
+disallow_untyped_calls = false
+
+[[tool.mypy.overrides]]
+# winreg is Windows-only; typeshed's stub for it is empty when mypy runs on
+# a non-Windows platform. Every usage here is guarded by `sys.platform ==
+# "win32"` and never actually runs elsewhere.
+module = ["deskai.autostart"]
+disable_error_code = ["attr-defined"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
