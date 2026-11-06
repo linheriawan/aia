@@ -9,7 +9,7 @@ import uuid
 from importlib.metadata import PackageNotFoundError, version
 from shlex import split as shlex_split
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QCloseEvent, QKeySequence
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -261,7 +261,13 @@ class _ModelTableWidget(QWidget):
             else ("", "", False, False, "0")
         )
         model_id, display_name, supports_tools, supports_images, context_tokens = values
-        self._table.setItem(row, 0, QTableWidgetItem(model_id))
+        id_item = QTableWidgetItem(model_id)
+        # Carry the existing row's id through edits so Save updates it in place
+        # instead of minting a new primary key — a fresh id would detach any
+        # session already pointing at this model (sessions.model_row_id is
+        # ON DELETE SET NULL when replace_models() drops the old row).
+        id_item.setData(Qt.ItemDataRole.UserRole, model.id if model is not None else None)
+        self._table.setItem(row, 0, id_item)
         self._table.setItem(row, 1, QTableWidgetItem(display_name))
 
         tools_check = QCheckBox()
@@ -297,9 +303,10 @@ class _ModelTableWidget(QWidget):
                 context_tokens = int(context_item.text()) if context_item is not None else 0
             except ValueError:
                 context_tokens = 0
+            existing_id = model_id_item.data(Qt.ItemDataRole.UserRole)
             models.append(
                 repositories.ModelRow(
-                    id=str(uuid.uuid4()),
+                    id=existing_id if isinstance(existing_id, str) else str(uuid.uuid4()),
                     provider_id=self._provider_id,
                     model_id=model_id_item.text().strip(),
                     display_name=(display_name_item.text().strip() if display_name_item else "")

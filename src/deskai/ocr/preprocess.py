@@ -21,15 +21,8 @@ def preprocess(image: np.ndarray) -> np.ndarray:
 
 
 def deskew(gray: np.ndarray) -> np.ndarray:
-    inverted = cv2.bitwise_not(gray)
-    threshold = cv2.threshold(inverted, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)[1]
-    coords = np.column_stack(np.where(threshold > 0))
-    if coords.shape[0] < _MIN_DESKEW_PIXELS:
-        return gray  # not enough signal to estimate a reliable angle
-
-    angle = cv2.minAreaRect(coords)[-1]
-    angle = -(90 + angle) if angle < -45 else -angle
-    if abs(angle) < _MIN_DESKEW_ANGLE_DEGREES:
+    angle = skew_angle(gray)
+    if angle is None or abs(angle) < _MIN_DESKEW_ANGLE_DEGREES:
         return gray
 
     height, width = gray.shape[:2]
@@ -38,6 +31,27 @@ def deskew(gray: np.ndarray) -> np.ndarray:
     return cv2.warpAffine(
         gray, matrix, (width, height), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE
     )
+
+
+def skew_angle(gray: np.ndarray) -> float | None:
+    """Degrees to pass to `cv2.getRotationMatrix2D` to level the text, or None
+    when there's too little ink to estimate it.
+
+    `cv2.minAreaRect`'s angle convention differs across OpenCV releases (4.x
+    reports (0, 90], others [-90, 0)), and a box's angle is only meaningful
+    modulo 90 anyway, so fold it into [-45, 45) instead of relying on either
+    convention. Points are passed as (x, y), the order OpenCV expects.
+    """
+    inverted = cv2.bitwise_not(gray)
+    threshold = cv2.threshold(inverted, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)[1]
+    ys, xs = np.where(threshold > 0)
+    if xs.size < _MIN_DESKEW_PIXELS:
+        return None  # not enough signal to estimate a reliable angle
+
+    points = np.column_stack((xs, ys)).astype(np.float32)
+    angle = float(cv2.minAreaRect(points)[-1])
+    angle = (angle + 45.0) % 90.0 - 45.0
+    return angle
 
 
 def enhance_contrast(gray: np.ndarray) -> np.ndarray:

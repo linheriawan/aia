@@ -4,7 +4,9 @@ version = "0.1.0"
 description = "Desktop AI assistant: tray app with chat, settings and usage, multiple model providers, and sandboxed local file tools."
 requires-python = ">=3.12"
 dependencies = [
-    "pyside6>=6.7",
+    # Intel Macs can't run macOS 13+, and PySide6 6.10+ ships macOS 13+ wheels only.
+    "pyside6>=6.7,<6.10; sys_platform == 'darwin' and platform_machine == 'x86_64'",
+    "pyside6>=6.7; sys_platform != 'darwin' or platform_machine != 'x86_64'",
     "qasync>=0.27",
     "platformdirs>=4.2",
     "keyring>=25.2",
@@ -16,7 +18,9 @@ dependencies = [
     "pymupdf<2.0",
     # onnxruntime dropped macOS x86_64 (Intel) wheels after 1.23.x; pin below
     # that so this installs on both Intel and Apple Silicon Macs.
-    "onnxruntime<1.24",
+    # Intel Macs on macOS 11-12 need 1.19.x: 1.20+ only ship macOS 13+ wheels.
+    "onnxruntime<1.20; sys_platform == 'darwin' and platform_machine == 'x86_64'",
+    "onnxruntime<1.24; sys_platform != 'darwin' or platform_machine != 'x86_64'",
     "rapidocr-onnxruntime>=1.4.4",
     "httpx>=0.28.1",
     "pyqtgraph>=0.14.0",
@@ -27,6 +31,12 @@ dependencies = [
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.uv]
+# opencv-python (pulled in by rapidocr) ships macOS 13+ x86_64 wheels from 4.11.
+constraint-dependencies = [
+    "opencv-python<4.11; sys_platform == 'darwin' and platform_machine == 'x86_64'",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/deskai"]

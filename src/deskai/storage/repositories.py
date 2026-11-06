@@ -299,6 +299,15 @@ def set_session_title(conn: sqlite3.Connection, session_id: str, title: str) -> 
     conn.commit()
 
 
+def delete_session(conn: sqlite3.Connection, session_id: str) -> None:
+    """Deletes the session; its messages, folders and tool_calls cascade with
+    it. `usage` rows keep their cost/token history — only their session link
+    is cleared, since usage.session_id has no ON DELETE action of its own."""
+    with conn:
+        conn.execute("UPDATE usage SET session_id = NULL WHERE session_id = ?", (session_id,))
+        conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+
+
 def list_sessions(conn: sqlite3.Connection) -> list[SessionRow]:
     rows = conn.execute("SELECT * FROM sessions ORDER BY updated_at DESC").fetchall()
     return [_session_from_row(row) for row in rows]

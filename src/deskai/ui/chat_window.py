@@ -8,8 +8,8 @@ import sqlite3
 import uuid
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QCloseEvent, QColor, QKeyEvent, QTextCursor
+from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtGui import QCloseEvent, QColor, QKeyEvent, QPalette, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -22,6 +22,8 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QMenu,
+    QMessageBox,
     QPlainTextEdit,
     QPushButton,
     QSizePolicy,
@@ -34,6 +36,7 @@ from deskai.core.errors import ProviderError
 from deskai.core.events import Done, Error, TextDelta, ToolCallFinished, ToolCallStarted
 from deskai.core.messages import Message, Role, TextPart
 from deskai.core.session import ChatSession
+from deskai.core.think_filter import ThinkTagFilter
 from deskai.mcp_client.manager import McpManager
 from deskai.ocr.engine import OcrEngine
 from deskai.providers.base import ModelInfo, Provider
@@ -50,6 +53,12 @@ from deskai.tools.sandbox import (
 from deskai.ui.confirm_dialog import ConfirmWriteDialog
 
 _SESSION_ROLE = int(Qt.ItemDataRole.UserRole)
+
+_ERROR_COLOR = QColor("#E05252")
+
+# A single dot sliding back and forth — shown while waiting on a slow (e.g.
+# local) model, in place of a static "…".
+_WAVE_FRAMES = [".  ", " . ", "  .", " . "]
 
 _EMPTY_MODEL = ModelInfo(
     id="", display_name="", supports_tools=False, supports_images=False, context_tokens=0
@@ -122,6 +131,10 @@ class ChatWindow(QMainWindow):
         self._pending_task: asyncio.Task[None] | None = None
         self._assistant_line_open = False
         self._awaiting_first_event = False
+        self._wave_index = 0
+        self._waiting_timer = QTimer(self)
+        self._waiting_timer.setInterval(300)
+        self._waiting_timer.timeout.connect(self._tick_waiting_animation)
 
         self.setWindowTitle("deskai — Chat")
         self.resize(1000, 700)
@@ -152,6 +165,8 @@ class ChatWindow(QMainWindow):
         )
         self._session_list.currentItemChanged.connect(self._on_session_selected)
         self._session_list.itemChanged.connect(self._on_session_renamed)
+        self._session_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._session_list.customContextMenuRequested.connect(self._on_session_context_menu)
         sidebar_splitter.addWidget(self._session_list)
 
         workspace_panel = QFrame()
@@ -310,6 +325,33 @@ class ChatWindow(QMainWindow):
         if self._active_session is not None and self._active_session.id == session_id:
             self._active_session.title = title
 
+    def _on_session_context_menu(self, pos: object) -> None:
+        item = self._session_list.itemAt(pos)  # type: ignore[arg-type]
+        if item is None:
+            return
+        session_id = item.data(_SESSION_ROLE)
+        menu = QMenu(self)
+        delete_action = menu.addAction("Delete chat")
+        chosen = menu.exec(self._session_list.mapToGlobal(pos))  # type: ignore[arg-type]
+        if chosen is delete_action:
+            self._delete_session(session_id, item.text())
+
+    def _delete_session(self, session_id: str, title: str) -> None:
+        reply = QMessageBox.question(
+            self,
+            "Delete chat",
+            f'Delete "{title}"? This removes its messages and workspace folders. '
+            "This cannot be undone.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        repositories.delete_session(self._conn, session_id)
+        if self._active_session is not None and self._active_session.id == session_id:
+            self._active_session = None
+        self.refresh_sessions()
+
     def _on_new_chat_clicked(self) -> None:
         self._create_session()
 
@@ -388,8 +430,12 @@ class ChatWindow(QMainWindow):
             text = "".join(getattr(part, "text", "") for part in message.parts)
             if not text:
                 continue
-            speaker = "You" if message.role.value == "user" else "deskai"
-            self._messages.appendPlainText(f"{speaker}: {text}")
+            if message.role.value == "user":
+                self._append_line(f"You: {text}", self._user_text_color())
+                continue
+            self._append_line("deskai: ")
+            think_filter = ThinkTagFilter()
+            self._append_segments([*think_filter.feed(text), *think_filter.flush()])
 
     def _sync_provider_box_to_session(self) -> None:
         provider_id = self._active_session.provider_id if self._active_session else None
@@ -508,18 +554,20 @@ class ChatWindow(QMainWindow):
             None,
         )
         if local_provider_id is None:
-            self._messages.appendPlainText(
+            self._append_line(
                 "[workspace changed: this folder requires a local provider, but none is "
-                'configured — add one in Settings → Providers and check "Treat as local"]'
+                'configured — add one in Settings → Providers and check "Treat as local"]',
+                self._muted_text_color(),
             )
             return
 
         index = self._provider_box.findData(local_provider_id)
         if index >= 0:
             self._provider_box.setCurrentIndex(index)  # fires _on_provider_selected
-        self._messages.appendPlainText(
+        self._append_line(
             "[workspace changed: switched to a local provider — this folder matches a "
-            "Local-only rule in Settings → Privacy]"
+            "Local-only rule in Settings → Privacy]",
+            self._muted_text_color(),
         )
 
     def _on_remove_folder_clicked(self, path: str) -> None:
@@ -550,7 +598,7 @@ class ChatWindow(QMainWindow):
         note = Message(Role.SYSTEM, [TextPart(f"Workspace changed: {what}")])
         self._active_session.history.append(note)
         repositories.append_message(self._conn, self._active_session.id, note)
-        self._messages.appendPlainText(f"[workspace changed: {what}]")
+        self._append_line(f"[workspace changed: {what}]", self._muted_text_color())
 
     # --- sending --------------------------------------------------------------
 
@@ -584,53 +632,80 @@ class ChatWindow(QMainWindow):
         if not text:
             return
         self._input.clear()
-        self._messages.appendPlainText(f"You: {text}")
-        self._messages.appendPlainText("deskai: …")
+        self._append_line(f"You: {text}", self._user_text_color())
+        self._wave_index = 0
+        self._append_line("deskai: " + _WAVE_FRAMES[0], self._muted_text_color())
         self._awaiting_first_event = True
         self._assistant_line_open = False
+        self._waiting_timer.start()
 
         self._pending_task = asyncio.ensure_future(self._stream_reply(text))
         self._update_send_enabled()
 
+    def _tick_waiting_animation(self) -> None:
+        self._wave_index = (self._wave_index + 1) % len(_WAVE_FRAMES)
+        self._set_waiting_line("deskai: " + _WAVE_FRAMES[self._wave_index])
+
+    def _set_waiting_line(self, text: str) -> None:
+        cursor = self._messages.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        cursor.movePosition(QTextCursor.MoveOperation.StartOfBlock, QTextCursor.MoveMode.KeepAnchor)
+        cursor.removeSelectedText()
+        char_format = QTextCharFormat()
+        char_format.setForeground(self._muted_text_color())
+        cursor.insertText(text, char_format)
+        self._messages.setTextCursor(cursor)
+
     async def _stream_reply(self, text: str) -> None:
         session = self._active_session
         assert session is not None
+        think_filter = ThinkTagFilter()
         try:
             async for event in session.send_message(text, confirm=self._confirm_write):
                 self._clear_waiting_placeholder()
                 if isinstance(event, TextDelta):
                     self._ensure_assistant_line()
-                    self._append_to_last_line(event.text)
+                    self._append_segments(think_filter.feed(event.text))
                 elif isinstance(event, ToolCallStarted):
                     args_preview = ", ".join(f"{k}={v!r}" for k, v in event.arguments.items())
-                    self._messages.appendPlainText(f"  ⚙ {event.name}({args_preview})")
+                    self._append_line(f"  ⚙ {event.name}({args_preview})", self._muted_text_color())
                     self._assistant_line_open = False
                 elif isinstance(event, ToolCallFinished):
                     marker = "✗" if event.is_error else "✓"
                     self._append_to_last_line(
-                        f"  {marker} {event.result_summary} ({event.duration_ms}ms)"
+                        f"  {marker} {event.result_summary} ({event.duration_ms}ms)",
+                        self._muted_text_color(),
                     )
                 elif isinstance(event, Error):
-                    self._messages.appendPlainText(f"[error: {event.message}]")
+                    self._append_line(f"[error: {event.message}]", _ERROR_COLOR)
                     self._assistant_line_open = False
                 elif isinstance(event, Done):
                     pass
         except asyncio.CancelledError:
             self._clear_waiting_placeholder()
-            self._messages.appendPlainText("[stopped]")
+            self._append_line("[stopped]", self._muted_text_color())
         except ProviderError as exc:
             self._clear_waiting_placeholder()
-            self._messages.appendPlainText(f"[error: {exc}]")
+            self._append_line(f"[error: {exc}]", _ERROR_COLOR)
         finally:
-            self._messages.appendPlainText("")
+            self._waiting_timer.stop()
+            self._append_segments(think_filter.flush())
+            self._append_line("")
             self._pending_task = None
             self._update_send_enabled()
 
+    def _append_segments(self, segments: list[tuple[str, bool]]) -> None:
+        """Appends `(text, is_thinking)` pairs from a `ThinkTagFilter` to the
+        current line, dimming the "thinking" ones."""
+        for segment, is_thinking in segments:
+            self._append_to_last_line(segment, self._muted_text_color() if is_thinking else None)
+
     def _clear_waiting_placeholder(self) -> None:
-        """Removes the "deskai: …" placeholder shown while waiting for the first event."""
+        """Removes the animated waiting placeholder shown before the first event."""
         if not self._awaiting_first_event:
             return
         self._awaiting_first_event = False
+        self._waiting_timer.stop()
         cursor = self._messages.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
         cursor.movePosition(QTextCursor.MoveOperation.StartOfBlock, QTextCursor.MoveMode.KeepAnchor)
@@ -644,14 +719,37 @@ class ChatWindow(QMainWindow):
 
     def _ensure_assistant_line(self) -> None:
         if not self._assistant_line_open:
-            self._messages.appendPlainText("deskai: ")
+            self._append_line("deskai: ")
             self._assistant_line_open = True
 
-    def _append_to_last_line(self, text: str) -> None:
+    def _user_text_color(self) -> QColor:
+        return self.palette().color(QPalette.ColorRole.Link)
+
+    def _muted_text_color(self) -> QColor:
+        return self.palette().color(QPalette.ColorRole.PlaceholderText)
+
+    def _append_line(self, text: str, color: QColor | None = None) -> None:
+        """Starts a new line in the message log, optionally colored (role-
+        coded: user / tool-activity / error lines get a color, the assistant's
+        own words stay in the default text color)."""
         cursor = self._messages.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
-        cursor.insertText(text)
+        if not self._messages.document().isEmpty():
+            cursor.insertBlock()
+        self._append_to_last_line(text, color, cursor=cursor)
+
+    def _append_to_last_line(
+        self, text: str, color: QColor | None = None, cursor: QTextCursor | None = None
+    ) -> None:
+        if cursor is None:
+            cursor = self._messages.textCursor()
+            cursor.movePosition(QTextCursor.MoveOperation.End)
+        char_format = QTextCharFormat()
+        if color is not None:
+            char_format.setForeground(color)
+        cursor.insertText(text, char_format)
         self._messages.setTextCursor(cursor)
+        self._messages.ensureCursorVisible()
 
     def closeEvent(self, event: QCloseEvent) -> None:
         event.ignore()

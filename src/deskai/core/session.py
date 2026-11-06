@@ -22,7 +22,11 @@ from deskai.tools.registry import ToolRegistry
 from deskai.tools.sandbox import Sandbox, matches_local_only_rule
 from deskai.usage import tracker
 
-DEFAULT_SYSTEM_PROMPT = "You are deskai, a helpful desktop assistant."
+DEFAULT_SYSTEM_PROMPT = (
+    "You are deskai, a helpful desktop assistant. Once a tool call has given you "
+    "what you need to answer, stop calling tools and reply in plain text — don't "
+    "repeat the same call again."
+)
 _SYSTEM_PROMPT_SETTING_KEY = "chat.system_prompt"
 
 # Tools that never touch `ctx.workspace`, so unlike the file/OCR/extraction

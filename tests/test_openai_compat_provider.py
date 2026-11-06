@@ -73,6 +73,9 @@ def test_message_to_openai_tool_call() -> None:
             "function": {"name": "read_text", "arguments": '{"path": "a.txt"}'},
         }
     ]
+    # Not `None`: some OpenAI-compatible backends (Cloudflare Workers AI's
+    # `/ai/v1` shim) reject `content: null` on a tool-call-only message.
+    assert entry["content"] == ""
 
 
 def test_message_to_openai_tool_result_expands_to_one_message_per_part() -> None:

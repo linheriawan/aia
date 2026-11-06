@@ -75,7 +75,11 @@ def _message_to_openai(message: Message) -> list[dict[str, Any]]:
         )
         entry["content"] = content
     else:
-        entry["content"] = "\n".join(p.text for p in text_parts) or None
+        # "" rather than `None`: a tool-call-only assistant message (no text)
+        # still needs a string here for some OpenAI-compatible backends —
+        # Cloudflare Workers AI's `/ai/v1` shim rejects `content: null` as a
+        # schema mismatch even though it's valid per the OpenAI spec.
+        entry["content"] = "\n".join(p.text for p in text_parts)
 
     if tool_call_parts:
         entry["tool_calls"] = [
